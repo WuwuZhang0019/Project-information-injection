@@ -144,8 +144,10 @@ class CadInfoInjector(tk.Tk):
         # Treeview for Variables
         columns = ("Variable", "Value")
         self.tree = ttk.Treeview(right_frame, columns=columns, show="headings")
-        self.tree.heading("Variable", text="Lisp 变量名 (如 xmbh)")
+        self.tree.heading("Variable", text="变量名")
         self.tree.heading("Value", text="变量值")
+        self.tree.column("Variable", width=100, stretch=False)
+        self.tree.column("Value", width=400, stretch=True)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind('<Double-1>', self.on_double_click)
         
@@ -521,7 +523,7 @@ class CadInfoInjector(tk.Tk):
             
     def save_current_project(self):
         self.save_data()
-        messagebox.showinfo("成功", "保存成功")
+        # messagebox.showinfo("成功", "保存成功")
 
     def inject_to_cad(self):
         if not self.current_project:
@@ -548,7 +550,7 @@ class CadInfoInjector(tk.Tk):
         # 保存到当前目录
         lsp_path = os.path.abspath(LSP_FILE)
         try:
-            with open(lsp_path, 'w', encoding='utf-8') as f:
+            with open(lsp_path, 'w', encoding='gb2312') as f:
                 f.write(lsp_content)
         except Exception as e:
             messagebox.showerror("错误", f"生成LSP文件失败: {e}")
@@ -564,14 +566,52 @@ class CadInfoInjector(tk.Tk):
             # 发送 load 命令并触发 regen
             command_str = f'(load "{lsp_path_cad}") '
             doc.SendCommand(command_str)
-            messagebox.showinfo("成功", f"成功注入到 AutoCAD！\n项目: {group_name} / {proj_name}\n已执行 REGEN。")
+            # messagebox.showinfo("成功", f"成功注入到 AutoCAD！\n项目: {group_name} / {proj_name}\n已执行 REGEN。")
         except Exception as e:
             messagebox.showwarning("COM 注入失败", f"无法直接控制 AutoCAD (可能未打开或权限不足)。\n\nLSP 脚本已生成在:\n{lsp_path}\n您可以将其直接拖入 CAD 窗口中。\n\n错误信息: {e}")
 
     def prompt_dialog(self, title, prompt, initialvalue=""):
-        # 简单的输入对话框替代方案
-        import tkinter.simpledialog as sd
-        return sd.askstring(title, prompt, initialvalue=initialvalue, parent=self)
+        # 自定义输入对话框以支持更宽的输入框
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.geometry("500x150")  # 增加宽度到 500
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        # 居中显示
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        result = [None]
+
+        tk.Label(dialog, text=prompt).pack(pady=10)
+        
+        entry = tk.Entry(dialog)
+        entry.pack(pady=5, padx=20, fill=tk.X)
+        if initialvalue:
+            entry.insert(0, initialvalue)
+            entry.select_range(0, tk.END)
+        entry.focus_set()
+        
+        def on_ok():
+            result[0] = entry.get()
+            dialog.destroy()
+            
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="确定", command=on_ok, width=8).pack(side=tk.LEFT, padx=15)
+        tk.Button(btn_frame, text="取消", command=on_cancel, width=8).pack(side=tk.LEFT, padx=15)
+        
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+        
+        self.wait_window(dialog)
+        return result[0]
 
     def prompt_combobox(self, title, prompt, values, initialvalue=""):
         # 自定义带有下拉框的对话框
