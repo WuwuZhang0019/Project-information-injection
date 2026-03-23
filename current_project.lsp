@@ -6,5 +6,5 @@
 (setq ctrq "2026-03")
 (setq BBH "1.0")
 (command "REGEN")
-(princ "\n[淄博 / 5#楼] 变量已更新并刷新图纸。")
+(princ "\n[淄博 / 5#楼] 变量已更新并自动刷新图纸。")
 (princ)

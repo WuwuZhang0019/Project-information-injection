@@ -5,6 +5,7 @@ import os
 import win32com.client
 
 DATA_FILE = "projects_data.json"
+CONFIG_FILE = "config.json"
 LSP_FILE = "current_project.lsp"
 
 class CadInfoInjector(tk.Tk):
@@ -16,9 +17,27 @@ class CadInfoInjector(tk.Tk):
         
         self.projects = {}
         self.current_project = None
+        self.auto_regen_var = tk.BooleanVar(value=True)
         
+        self.load_config()
         self.load_data()
         self.setup_ui()
+
+    def load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.auto_regen_var.set(config.get("auto_regen", True))
+            except Exception:
+                pass
+
+    def save_config(self):
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump({"auto_regen": self.auto_regen_var.get()}, f)
+        except Exception as e:
+            print(f"保存配置失败: {e}")
         
     def load_data(self):
         default_project = {
@@ -160,6 +179,12 @@ class CadInfoInjector(tk.Tk):
         
         action_frame = tk.Frame(right_frame)
         action_frame.pack(fill=tk.X, pady=10)
+        
+        # 增加自动 REGEN 的勾选框
+        chk_auto_regen = tk.Checkbutton(action_frame, text="注入后自动执行 REGEN (图纸较大时建议取消勾选)", 
+                                        variable=self.auto_regen_var, command=self.save_config)
+        chk_auto_regen.pack(side=tk.TOP, anchor="w", pady=5)
+        
         tk.Button(action_frame, text="一键注入到 CAD (生成LSP并执行)", font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", command=self.inject_to_cad).pack(fill=tk.X, ipady=10)
         
         self.refresh_project_list()
@@ -542,9 +567,13 @@ class CadInfoInjector(tk.Tk):
             # 简单处理，如果值是数字可以不加引号，这里默认全当字符串处理，CAD中字段通常也是字符串
             lsp_content += f'(setq {var} "{val}")\n'
         
-        # 添加自动刷新命令
-        lsp_content += '(command "REGEN")\n'
-        lsp_content += f'(princ "\\n[{group_name} / {proj_name}] 变量已更新并刷新图纸。")\n'
+        # 根据勾选框决定是否添加 REGEN 命令
+        if self.auto_regen_var.get():
+            lsp_content += '(command "REGEN")\n'
+            lsp_content += f'(princ "\\n[{group_name} / {proj_name}] 变量已更新并自动刷新图纸。")\n'
+        else:
+            lsp_content += f'(princ "\\n[{group_name} / {proj_name}] 变量已更新。如需更新图面显示，请手动输入 RE 命令刷新。")\n'
+        
         lsp_content += '(princ)\n'
         
         # 保存到当前目录
