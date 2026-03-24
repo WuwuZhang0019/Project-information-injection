@@ -49,6 +49,6 @@
 如果需要将源码打包为独立程序发给他人使用，可使用 PyInstaller：
 
 ```bash
-pyinstaller --noconfirm --onedir --windowed --name "CAD字段变量管理器" --add-data "data/projects_data.json;data" src/main.py
+pyinstaller --noconfirm --onedir --windowed --icon "assets/icon.ico" --name "CAD字段变量管理器" --add-data "data/projects_data.json;data" --add-data "assets/icon.ico;assets" src/main.py
 ```
 > 打包完成后，将 `dist` 目录下的 `CAD字段变量管理器` 整个文件夹压缩发送即可。

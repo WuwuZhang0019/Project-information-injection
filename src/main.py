@@ -29,6 +29,14 @@ class CadInfoInjector(tk.Tk):
         self.geometry("700x500")
         self.minsize(600, 400)  # 设置最小窗口尺寸
         
+        # 设置窗口图标
+        icon_path = os.path.join(BASE_DIR, "assets", "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception as e:
+                print(f"加载图标失败: {e}")
+        
         self.projects = {}
         self.current_project = None
         self.auto_regen_var = tk.BooleanVar(value=True)
