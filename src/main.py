@@ -3,10 +3,24 @@ from tkinter import ttk, messagebox
 import json
 import os
 import win32com.client
+import sys
 
-DATA_FILE = "projects_data.json"
-CONFIG_FILE = "config.json"
-LSP_FILE = "current_project.lsp"
+# 获取基础路径（兼容打包后和源码运行）
+def get_base_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+BASE_DIR = get_base_path()
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# 确保 data 目录存在
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+DATA_FILE = os.path.join(DATA_DIR, "projects_data.json")
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+LSP_FILE = os.path.join(BASE_DIR, "current_project.lsp")  # lsp文件放外层方便拖拽，或者放根目录
 
 class CadInfoInjector(tk.Tk):
     def __init__(self):

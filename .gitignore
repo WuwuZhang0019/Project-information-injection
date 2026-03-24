@@ -1,0 +1,22 @@
+# 打包生成的文件
+dist/
+build/
+*.spec
+
+# Python 缓存和虚拟环境
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# IDE 和系统文件
+.idea/
+.vscode/
+.DS_Store
+
+# 动态生成的文件
+current_project.lsp
+data/config.json
+# 如果你不想把本地的项目数据提交到git，可以取消下面这行的注释
+# data/projects_data.json
