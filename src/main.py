@@ -667,6 +667,47 @@ class CadInfoInjector(tk.Tk):
         except Exception:
             pass
 
+        # ROT 枚举兜底：用 GetActiveObject 按已知 ProgID 逐一尝试
+        # 可处理 ROT display name 不含 "AutoCAD" 字样的情况
+        acad_prog_ids = [
+            "AutoCAD.Application",
+            "AutoCAD.Application.26",  # AutoCAD 2024/2025
+            "AutoCAD.Application.25",  # AutoCAD 2023
+            "AutoCAD.Application.24",  # AutoCAD 2022
+            "AutoCAD.Application.23",  # AutoCAD 2021
+            "AutoCAD.Application.22",  # AutoCAD 2019/2020
+        ]
+        for prog_id in acad_prog_ids:
+            try:
+                acad = win32com.client.GetActiveObject(prog_id)
+                try:
+                    docs_col = acad.Documents
+                    for i in range(docs_col.Count):
+                        doc = docs_col.Item(i)
+                        try:
+                            full_path = doc.FullName
+                        except Exception:
+                            full_path = doc.Name
+                        if full_path not in seen_docs:
+                            seen_docs.add(full_path)
+                            doc_name = doc.Name
+                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                            documents.append((label, doc_name, acad, doc))
+                except Exception:
+                    doc = acad.ActiveDocument
+                    try:
+                        full_path = doc.FullName
+                    except Exception:
+                        full_path = doc.Name
+                    if full_path not in seen_docs:
+                        seen_docs.add(full_path)
+                        doc_name = doc.Name
+                        label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                        documents.append((label, doc_name, acad, doc))
+                break  # 找到一个可用实例即停止尝试
+            except Exception:
+                continue
+
         return documents
 
     def select_cad_document(self, docs):
