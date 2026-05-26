@@ -608,8 +608,9 @@ class CadInfoInjector(tk.Tk):
         documents = []
         seen_docs = set()
 
+        # 遍历 ROT 全部条目，通过 obj.Name 属性判断是否为 AutoCAD Application
+        # 不依赖 moniker 显示名，可同时识别多个 CAD 进程
         try:
-            ctx = pythoncom.CreateBindCtx(0)
             rot = pythoncom.GetRunningObjectTable()
             enum = rot.EnumRunning()
 
@@ -623,21 +624,21 @@ class CadInfoInjector(tk.Tk):
                 moniker = monikers[0]
 
                 try:
-                    display_name = moniker.GetDisplayName(ctx, None)
-                except Exception:
-                    continue
-
-                if 'AutoCAD' not in display_name:
-                    continue
-
-                try:
                     punk = rot.GetObject(moniker)
                     disp = punk.QueryInterface(pythoncom.IID_IDispatch)
                     obj = win32com.client.Dispatch(disp)
                 except Exception:
                     continue
 
-                # 尝试作为 Application 对象，遍历其所有已打开的文档
+                # 用 obj.Name 属性鉴别：AutoCAD Application 对象的 Name 包含 "AutoCAD"
+                try:
+                    obj_name = str(obj.Name)
+                    if 'AutoCAD' not in obj_name:
+                        continue
+                except Exception:
+                    continue
+
+                # 枚举该 CAD 进程下的所有已打开文档
                 try:
                     docs_col = obj.Documents
                     for i in range(docs_col.Count):
@@ -652,38 +653,46 @@ class CadInfoInjector(tk.Tk):
                             label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
                             documents.append((label, doc_name, obj, doc))
                 except Exception:
-                    # 不是 Application 对象，尝试作为 Document 对象
                     try:
-                        full_path = obj.FullName
+                        doc = obj.ActiveDocument
+                        try:
+                            full_path = doc.FullName
+                        except Exception:
+                            full_path = doc.Name
                         if full_path not in seen_docs:
                             seen_docs.add(full_path)
-                            doc_name = obj.Name
+                            doc_name = doc.Name
                             label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                            app = obj.Application
-                            documents.append((label, doc_name, app, obj))
+                            documents.append((label, doc_name, obj, doc))
                     except Exception:
                         pass
 
         except Exception:
             pass
 
-        # ROT 枚举兜底：用 GetActiveObject 按已知 ProgID 逐一尝试
-        # 可处理 ROT display name 不含 "AutoCAD" 字样的情况
-        acad_prog_ids = [
-            "AutoCAD.Application",
-            "AutoCAD.Application.26",  # AutoCAD 2024/2025
-            "AutoCAD.Application.25",  # AutoCAD 2023
-            "AutoCAD.Application.24",  # AutoCAD 2022
-            "AutoCAD.Application.23",  # AutoCAD 2021
-            "AutoCAD.Application.22",  # AutoCAD 2019/2020
-        ]
-        for prog_id in acad_prog_ids:
-            try:
-                acad = win32com.client.GetActiveObject(prog_id)
+        # 兜底：ROT 未找到任何文档时，用 GetActiveObject 尝试（仅能拿到一个实例）
+        if not documents:
+            for prog_id in ["AutoCAD.Application",
+                            "AutoCAD.Application.26", "AutoCAD.Application.25",
+                            "AutoCAD.Application.24", "AutoCAD.Application.23",
+                            "AutoCAD.Application.22"]:
                 try:
-                    docs_col = acad.Documents
-                    for i in range(docs_col.Count):
-                        doc = docs_col.Item(i)
+                    acad = win32com.client.GetActiveObject(prog_id)
+                    try:
+                        docs_col = acad.Documents
+                        for i in range(docs_col.Count):
+                            doc = docs_col.Item(i)
+                            try:
+                                full_path = doc.FullName
+                            except Exception:
+                                full_path = doc.Name
+                            if full_path not in seen_docs:
+                                seen_docs.add(full_path)
+                                doc_name = doc.Name
+                                label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                                documents.append((label, doc_name, acad, doc))
+                    except Exception:
+                        doc = acad.ActiveDocument
                         try:
                             full_path = doc.FullName
                         except Exception:
@@ -693,20 +702,9 @@ class CadInfoInjector(tk.Tk):
                             doc_name = doc.Name
                             label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
                             documents.append((label, doc_name, acad, doc))
+                    break
                 except Exception:
-                    doc = acad.ActiveDocument
-                    try:
-                        full_path = doc.FullName
-                    except Exception:
-                        full_path = doc.Name
-                    if full_path not in seen_docs:
-                        seen_docs.add(full_path)
-                        doc_name = doc.Name
-                        label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                        documents.append((label, doc_name, acad, doc))
-                break  # 找到一个可用实例即停止尝试
-            except Exception:
-                continue
+                    continue
 
         return documents
 
