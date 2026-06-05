@@ -3,7 +3,10 @@ from tkinter import ttk, messagebox
 import json
 import os
 import win32com.client
+import pythoncom
 import sys
+import win32gui
+import win32process
 
 # 获取基础路径（兼容打包后和源码运行）
 def get_base_path():
@@ -40,10 +43,18 @@ class CadInfoInjector(tk.Tk):
         self.projects = {}
         self.current_project = None
         self.auto_regen_var = tk.BooleanVar(value=True)
+        self.cad_instances = []
+        self.cad_windows = []
+        self.current_cad_index = 0
+        self.selected_cad_title = tk.StringVar()
         
         self.load_config()
         self.load_data()
         self.setup_ui()
+        try:
+            self.refresh_cad_instances()
+        except Exception as e:
+            print(f"刷新CAD实例列表失败: {e}")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -60,6 +71,92 @@ class CadInfoInjector(tk.Tk):
                 json.dump({"auto_regen": self.auto_regen_var.get()}, f)
         except Exception as e:
             print(f"保存配置失败: {e}")
+    
+    def get_cad_instances(self):
+        """获取所有运行中的AutoCAD实例"""
+        instances = []
+        
+        # 第一步：枚举所有AutoCAD窗口
+        self.cad_windows = []
+        try:
+            def enum_windows_callback(hwnd, results):
+                try:
+                    if win32gui.IsWindowVisible(hwnd):
+                        window_title = win32gui.GetWindowText(hwnd)
+                        if window_title and "AutoCAD" in window_title:
+                            results.append((hwnd, window_title))
+                except:
+                    pass
+                return True
+            
+            win32gui.EnumWindows(enum_windows_callback, self.cad_windows)
+        except Exception as e:
+            print(f"窗口枚举失败: {e}")
+        
+        if not self.cad_windows:
+            return instances
+        
+        # 第二步：尝试通过ROT获取COM对象
+        rot_objects = []
+        try:
+            pythoncom.CoInitialize()
+            rot = pythoncom.GetRunningObjectTable()
+            monikers = rot.EnumRunning()
+            for moniker in monikers:
+                try:
+                    obj = moniker.GetObject()
+                    if obj is not None and hasattr(obj, 'ActiveDocument'):
+                        rot_objects.append(obj)
+                except:
+                    continue
+        except Exception as e:
+            print(f"ROT枚举失败: {e}")
+        
+        # 第三步：为每个COM对象获取窗口标题
+        com_with_hwnd = []
+        for obj in rot_objects:
+            try:
+                hwnd = obj.HWND
+                title = obj.Caption
+                com_with_hwnd.append((hwnd, title, obj))
+            except:
+                pass
+        
+        # 第四步：匹配窗口和COM对象
+        for hwnd, window_title in self.cad_windows:
+            matched_obj = None
+            for com_hwnd, com_title, obj in com_with_hwnd:
+                if com_hwnd == hwnd:
+                    matched_obj = obj
+                    break
+            instances.append((window_title, matched_obj))
+        
+        return instances
+    
+    def refresh_cad_instances(self):
+        """刷新CAD实例列表"""
+        old_title = self.selected_cad_title.get()
+        self.cad_instances = self.get_cad_instances()
+        # 更新下拉框
+        if hasattr(self, 'cad_combobox'):
+            values = [title for title, _ in self.cad_instances]
+            self.cad_combobox['values'] = values
+            if values:
+                # 尝试保留之前的选择
+                if old_title in values:
+                    self.selected_cad_title.set(old_title)
+                else:
+                    self.cad_combobox.current(0)
+                # 检查是否所有实例都没有COM对象
+                all_none = all(instance is None for _, instance in self.cad_instances)
+                if all_none and hasattr(self, 'cad_status_label'):
+                    self.cad_status_label.config(text="⚠ 无法获取COM对象，请以管理员身份运行", fg="red")
+                elif hasattr(self, 'cad_status_label'):
+                    self.cad_status_label.config(text="✓ 已连接CAD实例", fg="green")
+            else:
+                self.cad_combobox.set("未找到CAD实例")
+                if hasattr(self, 'cad_status_label'):
+                    self.cad_status_label.config(text="未检测到AutoCAD", fg="gray")
         
     def load_data(self):
         default_project = {
@@ -201,6 +298,22 @@ class CadInfoInjector(tk.Tk):
         
         action_frame = tk.Frame(right_frame)
         action_frame.pack(fill=tk.X, pady=10)
+        
+        # CAD实例选择框架
+        cad_frame = tk.Frame(action_frame)
+        cad_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Label(cad_frame, text="选择CAD实例:").pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.cad_combobox = ttk.Combobox(cad_frame, textvariable=self.selected_cad_title, state="readonly", width=40)
+        self.cad_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        refresh_btn = tk.Button(cad_frame, text="🔄", command=self.refresh_cad_instances, width=3)
+        refresh_btn.pack(side=tk.LEFT)
+        
+        # 状态标签
+        self.cad_status_label = tk.Label(action_frame, text="正在检测CAD...", fg="gray")
+        self.cad_status_label.pack(anchor="w", pady=(0, 5))
         
         # 增加自动 REGEN 的勾选框
         chk_auto_regen = tk.Checkbutton(action_frame, text="注入后自动执行 REGEN (图纸较大时建议取消勾选)", 
@@ -578,7 +691,10 @@ class CadInfoInjector(tk.Tk):
             return
             
         group_name, proj_name = self.current_project
-        vars_dict = self.projects[group_name][proj_name]
+        if group_name is None:
+            vars_dict = self.projects.get(proj_name, {})
+        else:
+            vars_dict = self.projects.get(group_name, {}).get(proj_name, {})
         if not vars_dict:
             messagebox.showwarning("提示", "该项目没有变量")
             return
@@ -590,11 +706,12 @@ class CadInfoInjector(tk.Tk):
             lsp_content += f'(setq {var} "{val}")\n'
         
         # 根据勾选框决定是否添加 REGEN 命令
+        display_name = f"{group_name} / {proj_name}" if group_name else proj_name
         if self.auto_regen_var.get():
             lsp_content += '(command "REGEN")\n'
-            lsp_content += f'(princ "\\n[{group_name} / {proj_name}] 变量已更新并自动刷新图纸。")\n'
+            lsp_content += f'(princ "\\n[{display_name}] 变量已更新并自动刷新图纸。")\n'
         else:
-            lsp_content += f'(princ "\\n[{group_name} / {proj_name}] 变量已更新。如需更新图面显示，请手动输入 RE 命令刷新。")\n'
+            lsp_content += f'(princ "\\n[{display_name}] 变量已更新。如需更新图面显示，请手动输入 RE 命令刷新。")\n'
         
         lsp_content += '(princ)\n'
         
@@ -609,8 +726,43 @@ class CadInfoInjector(tk.Tk):
             
         # 2. 尝试通过 COM 接口发送给 AutoCAD
         try:
-            # 尝试连接当前运行的 AutoCAD
-            acad = win32com.client.Dispatch("AutoCAD.Application")
+            # 先刷新CAD实例列表
+            self.refresh_cad_instances()
+            
+            # 获取用户选择的CAD实例
+            selected_title = self.selected_cad_title.get()
+            acad = None
+            target_hwnd = None
+            
+            if selected_title and self.cad_instances:
+                # 查找匹配的CAD实例
+                for title, instance in self.cad_instances:
+                    if title == selected_title:
+                        acad = instance
+                        break
+            
+            # 找到目标窗口句柄（用于置顶）
+            if selected_title and self.cad_instances:
+                for hwnd, window_title in self.cad_windows:
+                    if window_title == selected_title:
+                        target_hwnd = hwnd
+                        break
+            
+            # 如果COM对象为None，尝试用Dispatch回退
+            if acad is None:
+                try:
+                    acad = win32com.client.Dispatch("AutoCAD.Application")
+                except Exception as e:
+                    messagebox.showwarning("提示", f"无法获取AutoCAD COM对象，请确保AutoCAD已打开。\n\n错误: {e}\n\nLSP文件已生成，可手动拖拽到CAD窗口")
+                    return
+            
+            # 置顶目标窗口
+            if target_hwnd:
+                try:
+                    win32gui.SetForegroundWindow(target_hwnd)
+                except:
+                    pass
+            
             doc = acad.ActiveDocument
             # 转换路径，将 \ 替换为 / 以防 Lisp 解析错误
             lsp_path_cad = lsp_path.replace("\\", "/")
