@@ -43,10 +43,8 @@ class CadInfoInjector(tk.Tk):
         self.projects = {}
         self.current_project = None
         self.auto_regen_var = tk.BooleanVar(value=True)
-        self.cad_instances = []
-        self.cad_windows = []
-        self.current_cad_index = 0
-        self.selected_cad_title = tk.StringVar()
+        self.cad_docs_cache = []
+        self.cad_target_var = tk.StringVar()
         
         self.load_config()
         self.load_data()
@@ -295,6 +293,13 @@ class CadInfoInjector(tk.Tk):
         tk.Button(var_btn_frame, text="添加变量", command=self.add_variable).pack(side=tk.LEFT, padx=5)
         tk.Button(var_btn_frame, text="删除变量", command=self.delete_variable).pack(side=tk.LEFT, padx=5)
         tk.Button(var_btn_frame, text="保存当前项目", command=self.save_current_project).pack(side=tk.LEFT, padx=5)
+
+        cad_sel_frame = tk.Frame(var_btn_frame)
+        cad_sel_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 5))
+        self.cad_combo = ttk.Combobox(cad_sel_frame, textvariable=self.cad_target_var,
+                                      state="readonly", postcommand=self.refresh_cad_list)
+        self.cad_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(cad_sel_frame, text="↻", command=self.refresh_cad_list, width=2).pack(side=tk.LEFT, padx=2)
         
         action_frame = tk.Frame(right_frame)
         action_frame.pack(fill=tk.X, pady=10)
@@ -323,6 +328,7 @@ class CadInfoInjector(tk.Tk):
         tk.Button(action_frame, text="一键注入到 CAD (生成LSP并执行)", font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", command=self.inject_to_cad).pack(fill=tk.X, ipady=10)
         
         self.refresh_project_list()
+        self.refresh_cad_list()
         
     def refresh_project_list(self):
         # 清空树
@@ -349,7 +355,7 @@ class CadInfoInjector(tk.Tk):
                 
             if is_group:
                 # 插入组节点
-                group_id = self.proj_tree.insert("", tk.END, iid=f"group_{key}", text=key, open=True)
+                group_id = self.proj_tree.insert("", tk.END, iid=f"group_{key}", text=key, open=False)
                 # 插入项目节点
                 for proj_name in val.keys():
                     self.proj_tree.insert(group_id, tk.END, iid=f"proj_{key}_{proj_name}", text=proj_name)
@@ -685,12 +691,194 @@ class CadInfoInjector(tk.Tk):
         self.save_data()
         # messagebox.showinfo("成功", "保存成功")
 
+    def refresh_cad_list(self):
+        """刷新主界面 CAD 图纸下拉列表。"""
+        try:
+            docs = self.get_all_cad_documents()
+        except Exception:
+            docs = []
+        self.cad_docs_cache = docs
+        if docs:
+            labels = [item[0] for item in docs]
+            prev = self.cad_target_var.get()
+            self.cad_combo['values'] = labels
+            if prev in labels:
+                self.cad_combo.set(prev)
+            else:
+                self.cad_combo.current(0)
+        else:
+            self.cad_combo['values'] = ["（未检测到运行中的 CAD）"]
+            self.cad_combo.current(0)
+
+    def get_all_cad_documents(self):
+        """通过 Running Object Table 枚举所有运行中的 AutoCAD 文档。
+        返回列表，每项为 (显示标签, 文档名, acad_app对象, acad_doc对象)。"""
+        documents = []
+        seen_docs = set()
+
+        # 遍历 ROT 全部条目，通过 obj.Name 属性判断是否为 AutoCAD Application
+        # 不依赖 moniker 显示名，可同时识别多个 CAD 进程
+        try:
+            rot = pythoncom.GetRunningObjectTable()
+            enum = rot.EnumRunning()
+
+            while True:
+                try:
+                    monikers = enum.Next(1)
+                except Exception:
+                    break
+                if not monikers:
+                    break
+                moniker = monikers[0]
+
+                try:
+                    punk = rot.GetObject(moniker)
+                    disp = punk.QueryInterface(pythoncom.IID_IDispatch)
+                    obj = win32com.client.Dispatch(disp)
+                except Exception:
+                    continue
+
+                # 用 obj.Name 属性鉴别：AutoCAD Application 对象的 Name 包含 "AutoCAD"
+                try:
+                    obj_name = str(obj.Name)
+                    if 'AutoCAD' not in obj_name:
+                        continue
+                except Exception:
+                    continue
+
+                # 枚举该 CAD 进程下的所有已打开文档
+                try:
+                    docs_col = obj.Documents
+                    for i in range(docs_col.Count):
+                        doc = docs_col.Item(i)
+                        try:
+                            full_path = doc.FullName
+                        except Exception:
+                            full_path = doc.Name
+                        if full_path not in seen_docs:
+                            seen_docs.add(full_path)
+                            doc_name = doc.Name
+                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                            documents.append((label, doc_name, obj, doc))
+                except Exception:
+                    try:
+                        doc = obj.ActiveDocument
+                        try:
+                            full_path = doc.FullName
+                        except Exception:
+                            full_path = doc.Name
+                        if full_path not in seen_docs:
+                            seen_docs.add(full_path)
+                            doc_name = doc.Name
+                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                            documents.append((label, doc_name, obj, doc))
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+        # 兜底：ROT 未找到任何文档时，用 GetActiveObject 尝试（仅能拿到一个实例）
+        if not documents:
+            for prog_id in ["AutoCAD.Application",
+                            "AutoCAD.Application.26", "AutoCAD.Application.25",
+                            "AutoCAD.Application.24", "AutoCAD.Application.23",
+                            "AutoCAD.Application.22"]:
+                try:
+                    acad = win32com.client.GetActiveObject(prog_id)
+                    try:
+                        docs_col = acad.Documents
+                        for i in range(docs_col.Count):
+                            doc = docs_col.Item(i)
+                            try:
+                                full_path = doc.FullName
+                            except Exception:
+                                full_path = doc.Name
+                            if full_path not in seen_docs:
+                                seen_docs.add(full_path)
+                                doc_name = doc.Name
+                                label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                                documents.append((label, doc_name, acad, doc))
+                    except Exception:
+                        doc = acad.ActiveDocument
+                        try:
+                            full_path = doc.FullName
+                        except Exception:
+                            full_path = doc.Name
+                        if full_path not in seen_docs:
+                            seen_docs.add(full_path)
+                            doc_name = doc.Name
+                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                            documents.append((label, doc_name, acad, doc))
+                    break
+                except Exception:
+                    continue
+
+        return documents
+
+    def select_cad_document(self, docs):
+        """弹出图纸选择对话框，返回用户选中的 (label, doc_name, acad_app, acad_doc)，取消返回 None。"""
+        dialog = tk.Toplevel(self)
+        dialog.title("选择目标 CAD 图纸")
+        dialog.geometry("620x220")
+        dialog.resizable(True, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dialog.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        result = [None]
+
+        tk.Label(dialog, text="检测到多个运行中的 CAD 图纸，请选择注入目标：",
+                 font=("微软雅黑", 10), pady=8).pack()
+
+        listbox_frame = tk.Frame(dialog)
+        listbox_frame.pack(fill=tk.BOTH, expand=True, padx=15)
+
+        scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical")
+        listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set,
+                             height=6, font=("微软雅黑", 10), activestyle="dotbox")
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for label, doc_name, acad_app, acad_doc in docs:
+            listbox.insert(tk.END, label)
+        listbox.selection_set(0)
+        listbox.focus_set()
+
+        def on_ok():
+            sel = listbox.curselection()
+            if sel:
+                result[0] = docs[sel[0]]
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="注入到此图纸", command=on_ok,
+                  bg="#4CAF50", fg="white", width=14).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="取消", command=on_cancel, width=8).pack(side=tk.LEFT, padx=10)
+
+        dialog.bind('<Return>', lambda e: on_ok())
+        dialog.bind('<Escape>', lambda e: on_cancel())
+        listbox.bind('<Double-1>', lambda e: on_ok())
+
+        self.wait_window(dialog)
+        return result[0]
+
     def inject_to_cad(self):
         if not self.current_project:
             messagebox.showwarning("提示", "请先选择一个具体项目")
             return
-            
+
         group_name, proj_name = self.current_project
+        # 兼容根级项目（group_name 为 None）
         if group_name is None:
             vars_dict = self.projects.get(proj_name, {})
         else:
@@ -698,24 +886,20 @@ class CadInfoInjector(tk.Tk):
         if not vars_dict:
             messagebox.showwarning("提示", "该项目没有变量")
             return
-            
-        # 1. Generate LSP file content
+
+        # 1. 生成 LSP 脚本内容
+        display_path = f"{group_name} / {proj_name}" if group_name else proj_name
         lsp_content = ";; 自动生成的CAD注入脚本\n"
         for var, val in vars_dict.items():
-            # 简单处理，如果值是数字可以不加引号，这里默认全当字符串处理，CAD中字段通常也是字符串
             lsp_content += f'(setq {var} "{val}")\n'
-        
-        # 根据勾选框决定是否添加 REGEN 命令
-        display_name = f"{group_name} / {proj_name}" if group_name else proj_name
+
         if self.auto_regen_var.get():
             lsp_content += '(command "REGEN")\n'
-            lsp_content += f'(princ "\\n[{display_name}] 变量已更新并自动刷新图纸。")\n'
+            lsp_content += f'(princ "\\n[{display_path}] 变量已更新并自动刷新图纸。")\n'
         else:
-            lsp_content += f'(princ "\\n[{display_name}] 变量已更新。如需更新图面显示，请手动输入 RE 命令刷新。")\n'
-        
+            lsp_content += f'(princ "\\n[{display_path}] 变量已更新。如需更新图面显示，请手动输入 RE 命令刷新。")\n'
         lsp_content += '(princ)\n'
-        
-        # 保存到当前目录
+
         lsp_path = os.path.abspath(LSP_FILE)
         try:
             with open(lsp_path, 'w', encoding='gb2312') as f:
@@ -723,55 +907,40 @@ class CadInfoInjector(tk.Tk):
         except Exception as e:
             messagebox.showerror("错误", f"生成LSP文件失败: {e}")
             return
-            
-        # 2. 尝试通过 COM 接口发送给 AutoCAD
+
+        # 2. 从主界面下拉框中获取目标 CAD 文档
+        selected_label = self.cad_target_var.get()
+        target = next((item for item in self.cad_docs_cache if item[0] == selected_label), None)
+
+        # 缓存中未命中，自动刷新一次再查
+        if target is None:
+            self.refresh_cad_list()
+            selected_label = self.cad_target_var.get()
+            target = next((item for item in self.cad_docs_cache if item[0] == selected_label), None)
+
+        if target is None:
+            if not self.cad_docs_cache:
+                messagebox.showwarning("COM 注入失败",
+                    f"未检测到任何运行中的 AutoCAD 图纸。\n\nLSP 脚本已生成在:\n{lsp_path}\n"
+                    "您可以将其直接拖入 CAD 窗口中。")
+            else:
+                messagebox.showwarning("提示", "请在上方下拉框中选择目标 CAD 图纸后再注入。")
+            return
+
+        label, doc_name, acad_app, acad_doc = target
+        lsp_path_cad = lsp_path.replace("\\", "/")
+        command_str = f'(load "{lsp_path_cad}") '
         try:
-            # 先刷新CAD实例列表
-            self.refresh_cad_instances()
-            
-            # 获取用户选择的CAD实例
-            selected_title = self.selected_cad_title.get()
-            acad = None
-            target_hwnd = None
-            
-            if selected_title and self.cad_instances:
-                # 查找匹配的CAD实例
-                for title, instance in self.cad_instances:
-                    if title == selected_title:
-                        acad = instance
-                        break
-            
-            # 找到目标窗口句柄（用于置顶）
-            if selected_title and self.cad_instances:
-                for hwnd, window_title in self.cad_windows:
-                    if window_title == selected_title:
-                        target_hwnd = hwnd
-                        break
-            
-            # 如果COM对象为None，尝试用Dispatch回退
-            if acad is None:
-                try:
-                    acad = win32com.client.Dispatch("AutoCAD.Application")
-                except Exception as e:
-                    messagebox.showwarning("提示", f"无法获取AutoCAD COM对象，请确保AutoCAD已打开。\n\n错误: {e}\n\nLSP文件已生成，可手动拖拽到CAD窗口")
-                    return
-            
-            # 置顶目标窗口
-            if target_hwnd:
-                try:
-                    win32gui.SetForegroundWindow(target_hwnd)
-                except:
-                    pass
-            
-            doc = acad.ActiveDocument
-            # 转换路径，将 \ 替换为 / 以防 Lisp 解析错误
-            lsp_path_cad = lsp_path.replace("\\", "/")
-            # 发送 load 命令并触发 regen
-            command_str = f'(load "{lsp_path_cad}") '
-            doc.SendCommand(command_str)
-            # messagebox.showinfo("成功", f"成功注入到 AutoCAD！\n项目: {group_name} / {proj_name}\n已执行 REGEN。")
+            # 切换到目标文档（使其成为活动文档）再发送命令
+            try:
+                acad_app.ActiveDocument = acad_doc
+            except Exception:
+                pass
+            acad_doc.SendCommand(command_str)
         except Exception as e:
-            messagebox.showwarning("COM 注入失败", f"无法直接控制 AutoCAD (可能未打开或权限不足)。\n\nLSP 脚本已生成在:\n{lsp_path}\n您可以将其直接拖入 CAD 窗口中。\n\n错误信息: {e}")
+            messagebox.showwarning("COM 注入失败",
+                f"无法向 '{doc_name}' 发送命令。\n\nLSP 脚本已生成在:\n{lsp_path}\n"
+                f"您可以将其直接拖入 CAD 窗口中。\n\n错误信息: {e}")
 
     def prompt_dialog(self, title, prompt, initialvalue=""):
         # 自定义输入对话框以支持更宽的输入框
@@ -791,26 +960,28 @@ class CadInfoInjector(tk.Tk):
 
         tk.Label(dialog, text=prompt).pack(pady=10)
         
-        entry = tk.Entry(dialog)
+        entry = tk.Text(dialog, height=1, wrap="none")
         entry.pack(pady=5, padx=20, fill=tk.X)
         if initialvalue:
-            entry.insert(0, initialvalue)
-            entry.select_range(0, tk.END)
+            entry.insert("1.0", initialvalue)
+            entry.tag_add("sel", "1.0", "end")
         entry.focus_set()
         
         def on_ok():
-            result[0] = entry.get()
+            result[0] = entry.get("1.0", "end-1c")
             dialog.destroy()
             
         def on_cancel():
             dialog.destroy()
+
+        entry.bind('<Return>', lambda e: (on_ok(), "break")[1])
+        entry.bind('<Escape>', lambda e: on_cancel())
 
         btn_frame = tk.Frame(dialog)
         btn_frame.pack(pady=10)
         tk.Button(btn_frame, text="确定", command=on_ok, width=8).pack(side=tk.LEFT, padx=15)
         tk.Button(btn_frame, text="取消", command=on_cancel, width=8).pack(side=tk.LEFT, padx=15)
         
-        dialog.bind('<Return>', lambda e: on_ok())
         dialog.bind('<Escape>', lambda e: on_cancel())
         
         self.wait_window(dialog)
