@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+from collections import Counter
 import win32com.client
 import pythoncom
 import sys
@@ -607,9 +608,52 @@ class CadInfoInjector(tk.Tk):
         返回列表，每项为 (显示标签, 文档名, acad_app对象, acad_doc对象)。"""
         documents = []
         seen_docs = set()
+        seen_apps = set()
 
-        # 遍历 ROT 全部条目，通过 obj.Name 属性判断是否为 AutoCAD Application
-        # 不依赖 moniker 显示名，可同时识别多个 CAD 进程
+        def add_application(app):
+            try:
+                if 'AutoCAD' not in str(app.Name):
+                    return
+                hwnd = int(app.HWND)
+                if hwnd in seen_apps:
+                    return
+                docs_col = app.Documents
+            except Exception:
+                return
+
+            try:
+                docs = []
+                for i in range(docs_col.Count):
+                    try:
+                        docs.append(docs_col.Item(i))
+                    except Exception:
+                        continue
+            except Exception:
+                try:
+                    docs = [app.ActiveDocument]
+                except Exception:
+                    return
+
+            seen_apps.add(hwnd)
+            for doc in docs:
+                try:
+                    doc_name = str(doc.Name)
+                except Exception:
+                    continue
+                try:
+                    full_path = str(doc.FullName or doc_name)
+                except Exception:
+                    full_path = doc_name
+                # 两个 CAD 进程可以打开同名图纸，不能只按文件路径去重。
+                key = (hwnd, full_path.casefold())
+                if key in seen_docs:
+                    continue
+                seen_docs.add(key)
+                label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
+                documents.append((label, doc_name, app, doc))
+
+        # 后启动的 AutoCAD 实例未必以 Application 对象注册到 ROT；
+        # 已保存图纸的 ROT 对象可以通过 Application 找到所属实例。
         try:
             rot = pythoncom.GetRunningObjectTable()
             enum = rot.EnumRunning()
@@ -630,42 +674,11 @@ class CadInfoInjector(tk.Tk):
                 except Exception:
                     continue
 
-                # 用 obj.Name 属性鉴别：AutoCAD Application 对象的 Name 包含 "AutoCAD"
                 try:
-                    obj_name = str(obj.Name)
-                    if 'AutoCAD' not in obj_name:
-                        continue
+                    app = obj.Application
                 except Exception:
-                    continue
-
-                # 枚举该 CAD 进程下的所有已打开文档
-                try:
-                    docs_col = obj.Documents
-                    for i in range(docs_col.Count):
-                        doc = docs_col.Item(i)
-                        try:
-                            full_path = doc.FullName
-                        except Exception:
-                            full_path = doc.Name
-                        if full_path not in seen_docs:
-                            seen_docs.add(full_path)
-                            doc_name = doc.Name
-                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                            documents.append((label, doc_name, obj, doc))
-                except Exception:
-                    try:
-                        doc = obj.ActiveDocument
-                        try:
-                            full_path = doc.FullName
-                        except Exception:
-                            full_path = doc.Name
-                        if full_path not in seen_docs:
-                            seen_docs.add(full_path)
-                            doc_name = doc.Name
-                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                            documents.append((label, doc_name, obj, doc))
-                    except Exception:
-                        pass
+                    app = obj
+                add_application(app)
 
         except Exception:
             pass
@@ -677,35 +690,19 @@ class CadInfoInjector(tk.Tk):
                             "AutoCAD.Application.24", "AutoCAD.Application.23",
                             "AutoCAD.Application.22"]:
                 try:
-                    acad = win32com.client.GetActiveObject(prog_id)
-                    try:
-                        docs_col = acad.Documents
-                        for i in range(docs_col.Count):
-                            doc = docs_col.Item(i)
-                            try:
-                                full_path = doc.FullName
-                            except Exception:
-                                full_path = doc.Name
-                            if full_path not in seen_docs:
-                                seen_docs.add(full_path)
-                                doc_name = doc.Name
-                                label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                                documents.append((label, doc_name, acad, doc))
-                    except Exception:
-                        doc = acad.ActiveDocument
-                        try:
-                            full_path = doc.FullName
-                        except Exception:
-                            full_path = doc.Name
-                        if full_path not in seen_docs:
-                            seen_docs.add(full_path)
-                            doc_name = doc.Name
-                            label = f"{doc_name}  [{full_path}]" if full_path != doc_name else doc_name
-                            documents.append((label, doc_name, acad, doc))
-                    break
+                    add_application(win32com.client.GetActiveObject(prog_id))
+                    if documents:
+                        break
                 except Exception:
                     continue
 
+        # 同一路径在两个实例中打开时，标签也必须能区分实例。
+        counts = Counter(item[0] for item in documents)
+        documents = [
+            (f"[CAD 窗口 {int(app.HWND)}] {label}" if counts[label] > 1 else label,
+             doc_name, app, doc)
+            for label, doc_name, app, doc in documents
+        ]
         return documents
 
     def select_cad_document(self, docs):
