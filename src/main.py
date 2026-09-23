@@ -309,7 +309,17 @@ class CadInfoInjector(tk.Tk):
         self.refresh_project_list()
         self.refresh_cad_list()
         
-    def refresh_project_list(self):
+    def refresh_project_list(self, selected_item=None, renamed_group=None):
+        open_groups = {
+            self.proj_tree.item(item, "text")
+            for item in self.proj_tree.get_children()
+            if item.startswith("group_") and self.proj_tree.item(item, "open")
+        }
+        if renamed_group and renamed_group[0] in open_groups:
+            open_groups.remove(renamed_group[0])
+            open_groups.add(renamed_group[1])
+        previous_selection = self.proj_tree.selection()
+
         # 清空树
         for item in self.proj_tree.get_children():
             self.proj_tree.delete(item)
@@ -334,7 +344,8 @@ class CadInfoInjector(tk.Tk):
                 
             if is_group:
                 # 插入组节点
-                group_id = self.proj_tree.insert("", tk.END, iid=f"group_{key}", text=key, open=False)
+                group_id = self.proj_tree.insert(
+                    "", tk.END, iid=f"group_{key}", text=key, open=key in open_groups)
                 # 插入项目节点
                 for proj_name in val.keys():
                     self.proj_tree.insert(group_id, tk.END, iid=f"proj_{key}_{proj_name}", text=proj_name)
@@ -342,25 +353,24 @@ class CadInfoInjector(tk.Tk):
                 # 独立的根级子项
                 self.proj_tree.insert("", tk.END, iid=f"rootproj_{key}", text=key)
 
-        # 恢复选中状态或默认选中“示例”
-        if self.current_project:
+        # 仅新建、复制等显式指定的目标需要滚动显示；普通刷新保留折叠状态。
+        show_selected = selected_item is not None
+        if not selected_item and previous_selection:
+            selected_item = previous_selection[0]
+        if not selected_item and self.current_project:
             group_name, proj_name = self.current_project
             if group_name is None:
-                item_id = f"rootproj_{proj_name}"
+                selected_item = f"rootproj_{proj_name}"
             else:
-                item_id = f"proj_{group_name}_{proj_name}"
-            
-            if self.proj_tree.exists(item_id):
-                self.proj_tree.selection_set(item_id)
-                self.proj_tree.focus(item_id)
-            elif "示例" in self.projects:
-                self.proj_tree.selection_set("rootproj_示例")
-                self.proj_tree.focus("rootproj_示例")
-                self.proj_tree.event_generate("<<TreeviewSelect>>")
-        elif "示例" in self.projects:
-            self.proj_tree.selection_set("rootproj_示例")
-            self.proj_tree.focus("rootproj_示例")
-            self.proj_tree.event_generate("<<TreeviewSelect>>")
+                selected_item = f"proj_{group_name}_{proj_name}"
+        if not selected_item or not self.proj_tree.exists(selected_item):
+            selected_item = "rootproj_示例" if "示例" in self.projects else None
+        if selected_item:
+            self.proj_tree.selection_set(selected_item)
+            self.proj_tree.focus(selected_item)
+            if show_selected:
+                self.proj_tree.see(selected_item)
+        self.on_project_select(None)
             
     def get_selected_item_info(self):
         selection = self.proj_tree.selection()
@@ -424,7 +434,7 @@ class CadInfoInjector(tk.Tk):
                 return
             self.projects[name] = {}
             self.save_data()
-            self.refresh_project_list()
+            self.refresh_project_list(selected_item=f"group_{name}")
             
     def rename_item(self):
         item_type, group_name, proj_name = self.get_selected_item_info()
@@ -445,7 +455,9 @@ class CadInfoInjector(tk.Tk):
                 # 更新字典键
                 self.projects[new_name] = self.projects.pop(group_name)
                 self.save_data()
-                self.refresh_project_list()
+                self.refresh_project_list(
+                    selected_item=f"group_{new_name}",
+                    renamed_group=(group_name, new_name))
         elif item_type == "project":
             new_name = self.prompt_dialog("重命名子项", f"将子项 '{proj_name}' 重命名为:", initialvalue=proj_name)
             if new_name and new_name != proj_name:
@@ -456,7 +468,7 @@ class CadInfoInjector(tk.Tk):
                 val = self.projects[group_name].pop(proj_name)
                 self.projects[group_name][new_name] = val
                 self.save_data()
-                self.refresh_project_list()
+                self.refresh_project_list(selected_item=f"proj_{group_name}_{new_name}")
                 
     def add_project(self):
         item_type, group_name, _ = self.get_selected_item_info()
@@ -471,7 +483,7 @@ class CadInfoInjector(tk.Tk):
                 return
             self.projects[group_name][name] = {}
             self.save_data()
-            self.refresh_project_list()
+            self.refresh_project_list(selected_item=f"proj_{group_name}_{name}")
             
     def copy_project(self):
         if not self.current_project:
@@ -512,13 +524,7 @@ class CadInfoInjector(tk.Tk):
             else:
                 self.projects[target_group][new_name] = dict(self.projects[group_name][proj_name])
             self.save_data()
-            self.refresh_project_list()
-            
-            # 自动选中新复制的项目
-            new_item_id = f"proj_{target_group}_{new_name}"
-            self.proj_tree.selection_set(new_item_id)
-            self.proj_tree.focus(new_item_id)
-            self.proj_tree.event_generate("<<TreeviewSelect>>")
+            self.refresh_project_list(selected_item=f"proj_{target_group}_{new_name}")
 
     def delete_item(self):
         item_type, group_name, proj_name = self.get_selected_item_info()
@@ -543,7 +549,7 @@ class CadInfoInjector(tk.Tk):
                 self.current_project = None
                 self.proj_title.config(text="未选择项目")
                 self.save_data()
-                self.refresh_project_list()
+                self.refresh_project_list(selected_item=f"group_{group_name}")
                 self.refresh_variables()
             
     def add_variable(self):
@@ -974,22 +980,19 @@ class CadInfoInjector(tk.Tk):
 
         tk.Label(dialog, text=prompt).pack(pady=10)
         
-        entry = tk.Text(dialog, height=1, wrap="none")
+        entry = ttk.Entry(dialog)
         entry.pack(pady=5, padx=20, fill=tk.X)
         if initialvalue:
-            entry.insert("1.0", initialvalue)
-            entry.tag_add("sel", "1.0", "end")
+            entry.insert(0, initialvalue)
+            entry.selection_range(0, tk.END)
         entry.focus_set()
         
         def on_ok():
-            result[0] = entry.get("1.0", "end-1c")
+            result[0] = entry.get()
             dialog.destroy()
             
         def on_cancel():
             dialog.destroy()
-
-        entry.bind('<Return>', lambda e: (on_ok(), "break")[1])
-        entry.bind('<Escape>', lambda e: on_cancel())
 
         btn_frame = tk.Frame(dialog)
         btn_frame.pack(pady=10)
