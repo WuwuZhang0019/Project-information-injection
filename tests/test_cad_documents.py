@@ -95,11 +95,12 @@ class FakeLabel:
 
 
 class CadDocumentDiscoveryTests(unittest.TestCase):
-    def discover(self, entries, active_object=None):
+    def discover(self, entries, active_object=None, windows=()):
         rot = FakeRot(entries)
         with patch("src.main.pythoncom.GetRunningObjectTable", return_value=rot), \
              patch("src.main.win32com.client.Dispatch", side_effect=lambda obj: obj), \
-             patch("src.main.win32com.client.GetActiveObject", return_value=active_object):
+             patch("src.main.win32com.client.GetActiveObject", return_value=active_object), \
+             patch("src.main.enumerate_autocad_windows", return_value=windows):
             return CadInfoInjector.get_all_cad_documents(None)
 
     def test_document_moniker_reveals_later_instance_and_all_its_drawings(self):
@@ -141,6 +142,20 @@ class CadDocumentDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(docs), 1)
         self.assertIs(docs[0][2], app)
+
+    def test_window_without_rot_document_is_still_listed(self):
+        first_doc = FakeDocument("first.dwg", r"C:\first.dwg")
+        first = FakeApplication(1001, [first_doc])
+        with patch("src.main.win32process.GetWindowThreadProcessId",
+                   side_effect=lambda hwnd: (0, {1001: 11, 1002: 22}[hwnd])):
+            docs = self.discover(
+                [first], windows=[(1001, 11, "Autodesk AutoCAD 2020 - first.dwg"),
+                                  (1002, 22, "Autodesk AutoCAD 2020 - second.dwg")])
+
+        self.assertEqual(len(docs), 2)
+        self.assertEqual(docs[1][2].HWND, 1002)
+        self.assertEqual(docs[1][3].Name, "当前活动图纸")
+        self.assertIn("second.dwg", docs[1][0])
 
     def test_selecting_instance_limits_injection_targets_to_its_drawings(self):
         first_doc = FakeDocument("first.dwg", r"C:\first.dwg")

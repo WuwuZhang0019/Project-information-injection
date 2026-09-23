@@ -8,6 +8,12 @@ import pythoncom
 import sys
 import win32gui
 import win32process
+if __package__:
+    from .cad_windows import (WindowCadApplication, WindowCadDocument,
+                              enumerate_autocad_windows)
+else:
+    from cad_windows import (WindowCadApplication, WindowCadDocument,
+                             enumerate_autocad_windows)
 
 # 获取基础路径（兼容打包后和源码运行）
 def get_base_path():
@@ -75,7 +81,7 @@ class CadInfoInjector(tk.Tk):
         """从可注入的图纸中提取实例，使用窗口句柄保持选择稳定。"""
         instances = []
         seen_hwnds = set()
-        for _, _, app, _ in docs:
+        for _, _, app, doc in docs:
             try:
                 hwnd = int(app.HWND)
             except Exception:
@@ -92,7 +98,8 @@ class CadInfoInjector(tk.Tk):
             except Exception:
                 title = str(app.Name)
             instance_id = f"PID {pid}" if pid else f"窗口 {hwnd}"
-            instances.append((f"{instance_id} · {title}", hwnd))
+            mode = "窗口" if isinstance(doc, WindowCadDocument) else "COM"
+            instances.append((f"[{mode}] {instance_id} · {title}", hwnd))
         return instances
 
     def refresh_cad_instances(self):
@@ -677,7 +684,14 @@ class CadInfoInjector(tk.Tk):
             if self.selected_cad_hwnd not in hwnds:
                 self.selected_cad_hwnd = hwnds[0]
             self.cad_combobox.current(hwnds.index(self.selected_cad_hwnd))
-            self.cad_status_label.config(text="✓ 已连接CAD实例", fg="green")
+            window_only = sum(isinstance(item[3], WindowCadDocument) for item in docs)
+            if window_only:
+                self.cad_status_label.config(
+                    text=f"{len(self.cad_instances)} 个CAD实例；{window_only} 个窗口连接（当前图纸）",
+                    fg="#9a6700")
+            else:
+                self.cad_status_label.config(
+                    text=f"✓ 已连接 {len(self.cad_instances)} 个CAD实例", fg="green")
         else:
             self.selected_cad_hwnd = None
             self.cad_combobox.set("未找到可连接的CAD实例")
@@ -776,6 +790,25 @@ class CadInfoInjector(tk.Tk):
                         break
                 except Exception:
                     continue
+
+        # 某些 AutoCAD 实例不向 ROT 暴露文档；仍可由进程窗口定位当前图纸。
+        known_pids = set()
+        for hwnd in seen_apps:
+            try:
+                known_pids.add(win32process.GetWindowThreadProcessId(hwnd)[1])
+            except Exception:
+                pass
+        try:
+            windows = enumerate_autocad_windows()
+        except Exception:
+            windows = []
+        for hwnd, pid, title in windows:
+            if hwnd in seen_apps or pid in known_pids:
+                continue
+            app = WindowCadApplication(hwnd, pid, title)
+            doc = WindowCadDocument(app)
+            documents.append((f"当前活动图纸（窗口连接）[{title}]", doc.Name, app, doc))
+            known_pids.add(pid)
 
         # 同一路径在两个实例中打开时，标签也必须能区分实例。
         counts = Counter(item[0] for item in documents)
@@ -898,6 +931,13 @@ class CadInfoInjector(tk.Tk):
             return
 
         label, doc_name, acad_app, acad_doc = target
+        if isinstance(acad_doc, WindowCadDocument):
+            if not messagebox.askokcancel(
+                    "窗口连接注入",
+                    "此 CAD 实例没有可用的 COM 连接。程序将激活所选 CAD 窗口，"
+                    "向当前活动图纸的命令行输入加载命令。\n\n"
+                    "请先确认该 CAD 没有正在执行的命令或文字编辑，然后继续。"):
+                return
         lsp_path_cad = lsp_path.replace("\\", "/")
         command_str = f'(load "{lsp_path_cad}") '
         try:
@@ -907,6 +947,10 @@ class CadInfoInjector(tk.Tk):
             except Exception:
                 pass
             acad_doc.SendCommand(command_str)
+            if isinstance(acad_doc, WindowCadDocument):
+                self.cad_status_label.config(
+                    text="已向所选 CAD 窗口发送加载命令，请查看该图纸的命令行结果",
+                    fg="#9a6700")
         except Exception as e:
             messagebox.showwarning("COM 注入失败",
                 f"无法向 '{doc_name}' 发送命令。\n\nLSP 脚本已生成在:\n{lsp_path}\n"
