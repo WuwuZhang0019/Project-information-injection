@@ -31,7 +31,7 @@ class CadInfoInjector(tk.Tk):
         super().__init__()
         self.title("CAD 字段变量管理器")
         self.geometry("700x500")
-        self.minsize(600, 400)  # 设置最小窗口尺寸
+        self.minsize(700, 500)  # 保证实例选择和注入按钮均可见
         
         # 设置窗口图标
         icon_path = os.path.join(BASE_DIR, "assets", "icon.ico")
@@ -45,15 +45,15 @@ class CadInfoInjector(tk.Tk):
         self.current_project = None
         self.auto_regen_var = tk.BooleanVar(value=True)
         self.cad_docs_cache = []
+        self.all_cad_docs_cache = []
+        self.cad_instances = []
+        self.selected_cad_hwnd = None
         self.cad_target_var = tk.StringVar()
+        self.selected_cad_title = tk.StringVar()
         
         self.load_config()
         self.load_data()
         self.setup_ui()
-        try:
-            self.refresh_cad_instances()
-        except Exception as e:
-            print(f"刷新CAD实例列表失败: {e}")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -71,92 +71,62 @@ class CadInfoInjector(tk.Tk):
         except Exception as e:
             print(f"保存配置失败: {e}")
     
-    def get_cad_instances(self):
-        """获取所有运行中的AutoCAD实例"""
+    def get_cad_instances(self, docs):
+        """从可注入的图纸中提取实例，使用窗口句柄保持选择稳定。"""
         instances = []
-        
-        # 第一步：枚举所有AutoCAD窗口
-        self.cad_windows = []
-        try:
-            def enum_windows_callback(hwnd, results):
-                try:
-                    if win32gui.IsWindowVisible(hwnd):
-                        window_title = win32gui.GetWindowText(hwnd)
-                        if window_title and "AutoCAD" in window_title:
-                            results.append((hwnd, window_title))
-                except:
-                    pass
-                return True
-            
-            win32gui.EnumWindows(enum_windows_callback, self.cad_windows)
-        except Exception as e:
-            print(f"窗口枚举失败: {e}")
-        
-        if not self.cad_windows:
-            return instances
-        
-        # 第二步：尝试通过ROT获取COM对象
-        rot_objects = []
-        try:
-            pythoncom.CoInitialize()
-            rot = pythoncom.GetRunningObjectTable()
-            monikers = rot.EnumRunning()
-            for moniker in monikers:
-                try:
-                    obj = moniker.GetObject()
-                    if obj is not None and hasattr(obj, 'ActiveDocument'):
-                        rot_objects.append(obj)
-                except:
-                    continue
-        except Exception as e:
-            print(f"ROT枚举失败: {e}")
-        
-        # 第三步：为每个COM对象获取窗口标题
-        com_with_hwnd = []
-        for obj in rot_objects:
+        seen_hwnds = set()
+        for _, _, app, _ in docs:
             try:
-                hwnd = obj.HWND
-                title = obj.Caption
-                com_with_hwnd.append((hwnd, title, obj))
-            except:
-                pass
-        
-        # 第四步：匹配窗口和COM对象
-        for hwnd, window_title in self.cad_windows:
-            matched_obj = None
-            for com_hwnd, com_title, obj in com_with_hwnd:
-                if com_hwnd == hwnd:
-                    matched_obj = obj
-                    break
-            instances.append((window_title, matched_obj))
-        
+                hwnd = int(app.HWND)
+            except Exception:
+                continue
+            if hwnd in seen_hwnds:
+                continue
+            seen_hwnds.add(hwnd)
+            try:
+                pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+            except Exception:
+                pid = None
+            try:
+                title = win32gui.GetWindowText(hwnd) or str(app.Caption)
+            except Exception:
+                title = str(app.Name)
+            instance_id = f"PID {pid}" if pid else f"窗口 {hwnd}"
+            instances.append((f"{instance_id} · {title}", hwnd))
         return instances
-    
+
     def refresh_cad_instances(self):
-        """刷新CAD实例列表"""
-        old_title = self.selected_cad_title.get()
-        self.cad_instances = self.get_cad_instances()
-        # 更新下拉框
-        if hasattr(self, 'cad_combobox'):
-            values = [title for title, _ in self.cad_instances]
-            self.cad_combobox['values'] = values
-            if values:
-                # 尝试保留之前的选择
-                if old_title in values:
-                    self.selected_cad_title.set(old_title)
-                else:
-                    self.cad_combobox.current(0)
-                # 检查是否所有实例都没有COM对象
-                all_none = all(instance is None for _, instance in self.cad_instances)
-                if all_none and hasattr(self, 'cad_status_label'):
-                    self.cad_status_label.config(text="⚠ 无法获取COM对象，请以管理员身份运行", fg="red")
-                elif hasattr(self, 'cad_status_label'):
-                    self.cad_status_label.config(text="✓ 已连接CAD实例", fg="green")
+        """实例和图纸共用一次发现结果。"""
+        self.refresh_cad_list()
+
+    def on_cad_instance_select(self, _event=None):
+        index = self.cad_combobox.current()
+        if 0 <= index < len(self.cad_instances):
+            self.selected_cad_hwnd = self.cad_instances[index][1]
+            self.show_cad_documents()
+
+    def show_cad_documents(self):
+        """仅显示所选 CAD 实例中的图纸。"""
+        docs = []
+        for item in self.all_cad_docs_cache:
+            try:
+                if int(item[2].HWND) == self.selected_cad_hwnd:
+                    docs.append(item)
+            except Exception:
+                continue
+        self.cad_docs_cache = docs
+        if docs:
+            labels = [item[0] for item in docs]
+            prev = self.cad_target_var.get()
+            self.cad_combo['values'] = labels
+            if prev in labels:
+                self.cad_combo.set(prev)
             else:
-                self.cad_combobox.set("未找到CAD实例")
-                if hasattr(self, 'cad_status_label'):
-                    self.cad_status_label.config(text="未检测到AutoCAD", fg="gray")
-        
+                self.cad_combo.current(0)
+        else:
+            self.cad_combo['values'] = ["（未检测到运行中的 CAD 图纸）"]
+            self.cad_combo.current(0)
+
     def load_data(self):
         default_project = {
             "示例": {
@@ -313,6 +283,7 @@ class CadInfoInjector(tk.Tk):
         
         self.cad_combobox = ttk.Combobox(cad_frame, textvariable=self.selected_cad_title, state="readonly", width=40)
         self.cad_combobox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.cad_combobox.bind('<<ComboboxSelected>>', self.on_cad_instance_select)
         
         refresh_btn = tk.Button(cad_frame, text="🔄", command=self.refresh_cad_instances, width=3)
         refresh_btn.pack(side=tk.LEFT)
@@ -693,23 +664,25 @@ class CadInfoInjector(tk.Tk):
         # messagebox.showinfo("成功", "保存成功")
 
     def refresh_cad_list(self):
-        """刷新主界面 CAD 图纸下拉列表。"""
+        """刷新 CAD 实例及图纸下拉列表。"""
         try:
             docs = self.get_all_cad_documents()
         except Exception:
             docs = []
-        self.cad_docs_cache = docs
-        if docs:
-            labels = [item[0] for item in docs]
-            prev = self.cad_target_var.get()
-            self.cad_combo['values'] = labels
-            if prev in labels:
-                self.cad_combo.set(prev)
-            else:
-                self.cad_combo.current(0)
+        self.all_cad_docs_cache = docs
+        self.cad_instances = self.get_cad_instances(docs)
+        self.cad_combobox['values'] = [item[0] for item in self.cad_instances]
+        if self.cad_instances:
+            hwnds = [item[1] for item in self.cad_instances]
+            if self.selected_cad_hwnd not in hwnds:
+                self.selected_cad_hwnd = hwnds[0]
+            self.cad_combobox.current(hwnds.index(self.selected_cad_hwnd))
+            self.cad_status_label.config(text="✓ 已连接CAD实例", fg="green")
         else:
-            self.cad_combo['values'] = ["（未检测到运行中的 CAD）"]
-            self.cad_combo.current(0)
+            self.selected_cad_hwnd = None
+            self.cad_combobox.set("未找到可连接的CAD实例")
+            self.cad_status_label.config(text="未检测到可连接的AutoCAD图纸", fg="gray")
+        self.show_cad_documents()
 
     def get_all_cad_documents(self):
         """通过 Running Object Table 枚举所有运行中的 AutoCAD 文档。

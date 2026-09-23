@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.main import CadInfoInjector
@@ -57,6 +58,42 @@ class FakeUnknown:
         return self.obj
 
 
+class FakeVar:
+    def __init__(self):
+        self.value = ""
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class FakeCombo:
+    def __init__(self, variable):
+        self.variable = variable
+        self.values = []
+        self.index = -1
+
+    def __setitem__(self, key, value):
+        if key == 'values':
+            self.values = value
+
+    def current(self, index=None):
+        if index is None:
+            return self.index
+        self.index = index
+        self.variable.set(self.values[index])
+
+    def set(self, value):
+        self.variable.set(value)
+
+
+class FakeLabel:
+    def config(self, **kwargs):
+        self.options = kwargs
+
+
 class CadDocumentDiscoveryTests(unittest.TestCase):
     def discover(self, entries, active_object=None):
         rot = FakeRot(entries)
@@ -104,6 +141,36 @@ class CadDocumentDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(docs), 1)
         self.assertIs(docs[0][2], app)
+
+    def test_selecting_instance_limits_injection_targets_to_its_drawings(self):
+        first_doc = FakeDocument("first.dwg", r"C:\first.dwg")
+        second_doc = FakeDocument("second.dwg", r"D:\second.dwg")
+        first = FakeApplication(1001, [first_doc])
+        second = FakeApplication(1002, [second_doc])
+        docs = [("first.dwg", "first.dwg", first, first_doc),
+                ("second.dwg", "second.dwg", second, second_doc)]
+        state = SimpleNamespace(
+            all_cad_docs_cache=[], cad_docs_cache=[], cad_instances=[],
+            selected_cad_hwnd=None, cad_target_var=FakeVar(),
+            selected_cad_title=FakeVar(), cad_status_label=FakeLabel(),
+            get_all_cad_documents=lambda: docs,
+            get_cad_instances=lambda items: [("CAD 1", 1001), ("CAD 2", 1002)],
+        )
+        state.cad_combo = FakeCombo(state.cad_target_var)
+        state.cad_combobox = FakeCombo(state.selected_cad_title)
+        state.show_cad_documents = lambda: CadInfoInjector.show_cad_documents(state)
+
+        CadInfoInjector.refresh_cad_list(state)
+        self.assertEqual([item[1] for item in state.cad_docs_cache], ["first.dwg"])
+
+        state.cad_combobox.current(1)
+        CadInfoInjector.on_cad_instance_select(state)
+        self.assertEqual([item[1] for item in state.cad_docs_cache], ["second.dwg"])
+        self.assertEqual(state.cad_target_var.get(), "second.dwg")
+
+        CadInfoInjector.refresh_cad_list(state)
+        self.assertEqual(state.selected_cad_hwnd, 1002)
+        self.assertEqual(state.cad_target_var.get(), "second.dwg")
 
 
 if __name__ == "__main__":
