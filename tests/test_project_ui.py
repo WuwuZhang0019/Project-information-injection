@@ -89,7 +89,7 @@ class ProjectUiTests(unittest.TestCase):
             entry = next(child for child in dialog.winfo_children()
                          if isinstance(child, ttk.Entry))
             entry.delete(0, tk.END)
-            entry.insert(0, "中文。．，1.0")
+            entry.insert(0, "中文。．，1.0·1989")
             ok = next(child for child in dialog.winfo_children()
                       if isinstance(child, tk.Frame))
             next(child for child in ok.winfo_children()
@@ -98,7 +98,7 @@ class ProjectUiTests(unittest.TestCase):
         self.app.after(0, enter_value)
         self.assertEqual(
             self.app.prompt_dialog("修改变量值", "输入变量值:", "旧值"),
-            "中文。．，1.0")
+            "中文。．，1.0·1989")
 
 
 if __name__ == "__main__":

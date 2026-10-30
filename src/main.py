@@ -31,6 +31,7 @@ if not os.path.exists(DATA_DIR):
 DATA_FILE = os.path.join(DATA_DIR, "projects_data.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 LSP_FILE = os.path.join(BASE_DIR, "current_project.lsp")  # lsp文件放外层方便拖拽，或者放根目录
+LSP_ENCODING = "gbk"
 
 class CadInfoInjector(tk.Tk):
     def __init__(self):
@@ -911,8 +912,16 @@ class CadInfoInjector(tk.Tk):
 
         lsp_path = os.path.abspath(LSP_FILE)
         try:
-            with open(lsp_path, 'w', encoding='gb2312') as f:
+            # 先验证编码，避免遇到不支持的字符时清空已有脚本。
+            lsp_content.encode(LSP_ENCODING)
+            with open(lsp_path, 'w', encoding=LSP_ENCODING) as f:
                 f.write(lsp_content)
+        except UnicodeEncodeError as e:
+            characters = ", ".join(f"U+{ord(char):04X}" for char in e.object[e.start:e.end])
+            messagebox.showerror(
+                "错误", f"生成LSP文件失败：项目名称、变量名或变量值中包含 "
+                f"GBK 不支持的字符（{characters}），请修改后重试。")
+            return
         except Exception as e:
             messagebox.showerror("错误", f"生成LSP文件失败: {e}")
             return
